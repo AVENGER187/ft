@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 /**
  * 🎬 CREATE PROJECT COMPONENT
  * Full-featured project creation with all backend fields
+ * ✅ FIXED: Project type values now match backend enum exactly
  */
 const CreateProject = () => {
   const navigate = useNavigate();
@@ -109,8 +110,20 @@ const CreateProject = () => {
         return;
       }
 
+      // ✅ FIXED: Ensure payment_type matches backend enum
+      const normalizedData = {
+        ...formData,
+        roles: formData.roles.map(role => ({
+          ...role,
+          // Normalize payment_type to match backend enum (paid, unpaid, negotiable)
+          payment_type: role.payment_type.toLowerCase()
+        }))
+      };
+
+      console.log('📤 Sending project data:', normalizedData);
+
       // Create project
-      const createdProject = await projectService.createProject(formData);
+      const createdProject = await projectService.createProject(normalizedData);
       console.log('✅ Project created:', createdProject);
       
       toast.success('Project created successfully!');
@@ -192,6 +205,7 @@ const CreateProject = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Project Type *
                 </label>
+                {/* ✅ FIXED: Values now match backend exactly */}
                 <select
                   name="project_type"
                   value={formData.project_type}
@@ -201,10 +215,11 @@ const CreateProject = () => {
                 >
                   <option value="short_film">Short Film</option>
                   <option value="feature_film">Feature Film</option>
+                  <option value="series">Series</option>
                   <option value="documentary">Documentary</option>
-                  <option value="web_series">Web Series</option>
-                  <option value="commercial">Commercial</option>
                   <option value="music_video">Music Video</option>
+                  <option value="commercial">Commercial</option>
+                  <option value="other">Other</option>
                 </select>
               </div>
 
@@ -395,6 +410,7 @@ const CreateProject = () => {
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Payment Type *
                       </label>
+                      {/* ✅ FIXED: Values match backend enum (paid, unpaid, negotiable) */}
                       <select
                         value={role.payment_type}
                         onChange={(e) => updateRole(index, 'payment_type', e.target.value)}
@@ -403,8 +419,7 @@ const CreateProject = () => {
                       >
                         <option value="unpaid">Unpaid</option>
                         <option value="paid">Paid</option>
-                        <option value="deferred">Deferred</option>
-                        <option value="profit_share">Profit Share</option>
+                        <option value="negotiable">Negotiable</option>
                       </select>
                     </div>
                     {role.payment_type === 'paid' && (

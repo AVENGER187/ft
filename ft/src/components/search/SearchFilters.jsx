@@ -46,6 +46,61 @@ const SearchFilters = ({ filters, onFiltersChange, type = 'projects' }) => {
             </button>
           </div>
 
+          // Add to your SearchFilters component
+{type === 'users' && (
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">
+      Profession
+    </label>
+    <select
+      value={filters.profession || ''}
+      onChange={(e) => onFiltersChange({ ...filters, profession: e.target.value })}
+      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-400 focus:border-transparent"
+    >
+      <option value="">All Professions</option>
+      <option value="Director">Director</option>
+      <option value="Producer">Producer</option>
+      <option value="Cinematographer">Cinematographer</option>
+      <option value="Editor">Editor</option>
+      <option value="Sound Designer">Sound Designer</option>
+      <option value="Writer">Writer</option>
+      <option value="Actor">Actor</option>
+      <option value="Composer">Composer</option>
+      <option value="Production Designer">Production Designer</option>
+      <option value="Costume Designer">Costume Designer</option>
+      <option value="Makeup Artist">Makeup Artist</option>
+      <option value="VFX Artist">VFX Artist</option>
+      <option value="Colorist">Colorist</option>
+      <option value="Gaffer">Gaffer</option>
+      <option value="Grip">Grip</option>
+      <option value="Other">Other</option>
+    </select>
+  </div>
+)}
+
+{type === 'projects' && (
+  <div>
+    <label className="block text-sm font-medium text-gray-700 mb-2">
+      Project Type
+    </label>
+    <select
+      value={filters.project_type || ''}
+      onChange={(e) => onFiltersChange({ ...filters, project_type: e.target.value })}
+      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-400 focus:border-transparent"
+    >
+      <option value="">All Types</option>
+      <option value="short_film">Short Film</option>
+      <option value="feature_film">Feature Film</option>
+      <option value="documentary">Documentary</option>
+      <option value="web_series">Web Series</option>
+      <option value="tv_series">TV Series</option>
+      <option value="commercial">Commercial</option>
+      <option value="music_video">Music Video</option>
+      <option value="other">Other</option>
+    </select>
+  </div>
+)}
+
           {/* Skills Filter */}
           <SkillsFilter
             selectedSkills={filters.skills || []}

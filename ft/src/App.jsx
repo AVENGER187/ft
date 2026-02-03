@@ -12,7 +12,6 @@ import Dashboard from './pages/Dashboard';
 import Messages from './pages/Messages';
 import Search from './pages/Search';
 import Notifications from './pages/Notifications';
-import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import ChatPage from './pages/ChatPage';
 
@@ -93,7 +92,7 @@ function App() {
               } 
             />
 
-            {/* Protected Routes - Phase 1 */}
+            {/* Protected Routes - Main Dashboard */}
             <Route
               path="/dashboard"
               element={
@@ -103,7 +102,7 @@ function App() {
               }
             />
 
-            {/* Protected Routes - Phase 2 */}
+            {/* Protected Routes - Additional Pages */}
             <Route
               path="/messages"
               element={
@@ -121,23 +120,30 @@ function App() {
               }
             />
 
-            <Route path="/chat" element={<ChatPage />} />
-<Route path="/chat/:projectId" element={<ChatPage />} />
+            {/* Chat Routes */}
+            <Route 
+              path="/chat" 
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/chat/:projectId" 
+              element={
+                <ProtectedRoute>
+                  <ChatPage />
+                </ProtectedRoute>
+              } 
+            />
 
-            {/* Protected Routes - Phase 3 🌟 NEW */}
+            {/* Protected Routes - Notifications & Settings */}
             <Route
               path="/notifications"
               element={
                 <ProtectedRoute>
                   <Notifications />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/analytics"
-              element={
-                <ProtectedRoute>
-                  <Analytics />
                 </ProtectedRoute>
               }
             />

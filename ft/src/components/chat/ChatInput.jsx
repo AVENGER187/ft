@@ -1,69 +1,56 @@
 import React, { useState, useRef } from 'react';
-import { Send, Paperclip, Smile, X } from 'lucide-react';
-import { useFileUpload } from '../../hooks/phase2-hooks';
-import websocketService from '../../services/websocket.service';
+import { Send, Paperclip, X } from 'lucide-react';
+import { uploadService } from '../../services/api';
 
+/**
+ * Chat message input bar.
+ *
+ * Props:
+ *   onSend(content, attachments)  – called when the user presses Send / Enter
+ *   roomId                        – project id (used as context label only here)
+ */
 const ChatInput = ({ onSend, roomId }) => {
-  const [message, setMessage] = useState('');
-  const [attachments, setAttachments] = useState([]);
-  const [isTyping, setIsTyping] = useState(false);
-  const fileInputRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
-  const { uploadFile, uploading, progress } = useFileUpload();
+  const [message, setMessage]       = useState('');
+  const [attachments, setAttachments] = useState([]);   // [{name, url}]
+  const [uploading, setUploading]   = useState(false);
+  const fileInputRef                = useRef(null);
 
-  const handleTyping = (value) => {
-    setMessage(value);
-
-    // Notify others that user is typing
-    if (!isTyping) {
-      setIsTyping(true);
-      websocketService.sendTyping(roomId, true);
-    }
-
-    // Clear existing timeout
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-
-    // Set new timeout to stop typing indicator
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false);
-      websocketService.sendTyping(roomId, false);
-    }, 1000);
-  };
-
+  // ── file upload ────────────────────────────────────
   const handleFileSelect = async (e) => {
-    const files = Array.from(e.target.files);
-    
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    setUploading(true);
     for (const file of files) {
       try {
-        const result = await uploadFile(file, 'chat');
-        setAttachments((prev) => [...prev, result]);
-      } catch (error) {
-        console.error('Upload failed:', error);
+        // reuse the existing portfolio upload endpoint (accepts images + video + pdf)
+        const result = await uploadService.uploadPortfolio(file);
+        setAttachments(prev => [...prev, { name: file.name, url: result.url }]);
+      } catch (err) {
+        console.error('Upload failed:', err);
       }
     }
+    setUploading(false);
+    // reset the hidden <input> so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const removeAttachment = (index) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
-  };
+  const removeAttachment = (idx) =>
+    setAttachments(prev => prev.filter((_, i) => i !== idx));
 
+  // ── send ───────────────────────────────────────────
   const handleSend = async () => {
     if (!message.trim() && attachments.length === 0) return;
-
     try {
       await onSend(message, attachments);
       setMessage('');
       setAttachments([]);
-      setIsTyping(false);
-      websocketService.sendTyping(roomId, false);
-    } catch (error) {
-      console.error('Failed to send message:', error);
+    } catch (err) {
+      console.error('Failed to send message:', err);
     }
   };
 
-  const handleKeyPress = (e) => {
+  const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -72,18 +59,15 @@ const ChatInput = ({ onSend, roomId }) => {
 
   return (
     <div className="border-t border-gray-200 bg-white">
-      {/* Attachments Preview */}
+      {/* attachment previews */}
       {attachments.length > 0 && (
         <div className="px-4 py-2 flex gap-2 flex-wrap border-b border-gray-200">
-          {attachments.map((attachment, index) => (
-            <div
-              key={index}
-              className="relative group bg-gray-100 rounded-lg p-2 pr-8"
-            >
-              <span className="text-sm text-gray-700">{attachment.name}</span>
+          {attachments.map((att, i) => (
+            <div key={i} className="relative group bg-gray-100 rounded-lg px-3 py-1 pr-8">
+              <span className="text-sm text-gray-700">{att.name}</span>
               <button
-                onClick={() => removeAttachment(index)}
-                className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={() => removeAttachment(i)}
+                className="absolute top-0.5 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -92,23 +76,9 @@ const ChatInput = ({ onSend, roomId }) => {
         </div>
       )}
 
-      {/* Upload Progress */}
-      {uploading && (
-        <div className="px-4 py-2 border-b border-gray-200">
-          <div className="flex items-center gap-3">
-            <div className="flex-1 bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-gradient-to-r from-orange-400 to-yellow-400 h-2 rounded-full transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="text-sm text-gray-600">{Math.round(progress)}%</span>
-          </div>
-        </div>
-      )}
-
-      {/* Input Area */}
+      {/* input row */}
       <div className="p-4 flex items-end gap-3">
+        {/* hidden file input */}
         <input
           type="file"
           ref={fileInputRef}
@@ -117,36 +87,33 @@ const ChatInput = ({ onSend, roomId }) => {
           multiple
         />
 
+        {/* attach button */}
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
           className="p-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
+          title="Attach file"
         >
           <Paperclip className="w-5 h-5 text-gray-600" />
         </button>
 
-        <div className="flex-1 relative">
+        {/* textarea */}
+        <div className="flex-1">
           <textarea
             value={message}
-            onChange={(e) => handleTyping(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Type a message..."
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
             rows={1}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-400 focus:border-transparent resize-none max-h-32"
             style={{ minHeight: '40px' }}
           />
         </div>
 
-        <button
-          onClick={() => {/* Emoji picker */}}
-          className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          <Smile className="w-5 h-5 text-gray-600" />
-        </button>
-
+        {/* send button */}
         <button
           onClick={handleSend}
-          disabled={!message.trim() && attachments.length === 0}
+          disabled={(!message.trim() && attachments.length === 0) || uploading}
           className="p-3 bg-gradient-to-r from-orange-400 to-yellow-400 text-white rounded-lg hover:from-orange-500 hover:to-yellow-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Send className="w-5 h-5" />

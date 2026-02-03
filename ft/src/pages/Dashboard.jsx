@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { 
   Film, LogOut, User, Plus, 
-  Bell, TrendingUp, Settings as SettingsIcon,
-  Search as SearchIcon, Users as UsersIcon
+  Bell, Settings as SettingsIcon,
+  Search as SearchIcon, MessageCircle
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
@@ -11,7 +11,6 @@ import Profile from '../components/profile/Profile';
 import NotificationCenter from '../components/notifications/NotificationCenter';
 import BrowseTab from '../components/browse/BrowseTab';
 import CreateProject from '../components/projects/CreateProject';
-import { MessageCircle } from 'lucide-react';
 
 const Dashboard = () => {
   const { user, logout } = useAuth();
@@ -48,7 +47,7 @@ const Dashboard = () => {
 
             {/* Navigation Actions */}
             <div className="flex items-center gap-2">
-              {/* 🌟 Phase 3: Notifications with Text */}
+              {/* Notifications */}
               <button
                 onClick={() => navigate('/notifications')}
                 className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-all relative"
@@ -63,27 +62,17 @@ const Dashboard = () => {
                 )}
               </button>
 
-              {/* 🌟 Phase 3: Analytics */}
+              {/* Chat */}
               <button
-                onClick={() => navigate('/analytics')}
+                onClick={() => navigate('/chat')}
                 className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-all"
-                title="Analytics"
+                title="Chat"
               >
-                <TrendingUp className="w-5 h-5" />
-                <span className="hidden sm:inline">Analytics</span>
+                <MessageCircle className="w-5 h-5" />
+                <span className="hidden lg:inline">Chat</span>
               </button>
 
-              {/* Chat */}
-<button
-  onClick={() => navigate('/chat')}
-  className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-all"
-  title="Chat"
->
-  <MessageCircle className="w-5 h-5" />
-  <span className="hidden lg:inline">Chat</span>
-</button>
-
-              {/* 🌟 Phase 3: Settings */}
+              {/* Settings */}
               <button
                 onClick={() => navigate('/settings')}
                 className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-all"

@@ -55,7 +55,6 @@ async def search_projects(
 ):
     """Search for projects. Filter by skill, type, and location."""
     
-    # Base query - only show ACTIVE projects that aren't fully staffed
     query = select(ProjectModel).where(
         and_(
             ProjectModel.status == ProjectStatusEnum.ACTIVE,
@@ -68,22 +67,18 @@ async def search_projects(
     
     results = []
     for project in projects:
-        # Get roles
         result = await db.execute(
             select(ProjectRoleModel).where(ProjectRoleModel.project_id == project.id)
         )
         roles = result.scalars().all()
         
-        # Filter by skill if specified
         if skill_id:
             if not any(r.skill_id == skill_id and not r.is_filled for r in roles):
                 continue
         
-        # Filter by project type
         if project_type and project.project_type.value != project_type:
             continue
         
-        # Calculate distance
         distance = None
         if latitude and longitude and project.latitude and project.longitude:
             distance = haversine(longitude, latitude, project.longitude, project.latitude)
@@ -113,7 +108,6 @@ async def search_projects(
             roles=roles_data
         ))
     
-    # Sort by distance if location provided
     if latitude and longitude:
         results.sort(key=lambda x: x.distance_km if x.distance_km else float('inf'))
     
@@ -133,11 +127,9 @@ async def search_users(
     
     query = select(UserProfileModel)
     
-    # Filter by name (partial match)
     if name:
         query = query.where(UserProfileModel.name.ilike(f"%{name}%"))
     
-    # Filter by profession (partial match)
     if profession:
         query = query.where(UserProfileModel.profession.ilike(f"%{profession}%"))
     
@@ -146,18 +138,19 @@ async def search_users(
     
     results = []
     for profile in profiles:
-        # Get skills
+        # ✅ FIXED: was user_skills.c.user_id == profile.user_id  (column doesn't exist)
+        #           now user_skills.c.user_profile_id == profile.id  (correct FK)
         result = await db.execute(
-            select(SkillModel).join(user_skills).where(user_skills.c.user_id == profile.user_id)
+            select(SkillModel)
+            .join(user_skills)
+            .where(user_skills.c.user_profile_id == profile.id)
         )
         skills = result.scalars().all()
         
-        # Filter by skill if specified
         if skill_id:
             if not any(s.id == skill_id for s in skills):
                 continue
         
-        # Calculate distance
         distance = None
         if latitude and longitude and profile.latitude and profile.longitude:
             distance = haversine(longitude, latitude, profile.longitude, profile.latitude)
@@ -179,7 +172,6 @@ async def search_users(
             skills=skills_data
         ))
     
-    # Sort by distance if location provided
     if latitude and longitude:
         results.sort(key=lambda x: x.distance_km if x.distance_km else float('inf'))
     

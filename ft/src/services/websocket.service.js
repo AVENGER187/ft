@@ -1,178 +1,137 @@
-import { io } from 'socket.io-client';
-import { WS_BASE_URL } from '../utils/constants';
+/**
+ * ✅ NATIVE WEBSOCKET SERVICE
+ * Uses the browser's built-in WebSocket — no Socket.io dependency.
+ *
+ * Backend handshake (chat.py):
+ *   1.  Client opens   ws://{host}/chat/ws/{project_id}
+ *   2.  Server accepts immediately.
+ *   3.  Client sends   { "token": "<jwt>" }          ← auth
+ *   4.  Server validates; sends { "error": "…" } on failure.
+ *   5.  Client sends   { "content": "hello" }        ← each message
+ *   6.  Server broadcasts to all connections in the room.
+ */
+
+const WS_BASE = (() => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  // Dev: backend on :8000 even though React dev-server is on :5173
+  return `${proto}://localhost:8000`;
+})();
 
 class WebSocketService {
   constructor() {
-    this.socket = null;
-    this.connected = false;
+    this.socket            = null;
+    this.connected         = false;
+    this.projectId         = null;
+    this.token             = null;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnects     = 5;
+    this.baseDelay         = 1000;
+    this.reconnectTimer    = null;
+    this._messageCallbacks = [];
+    this._statusCallbacks  = [];
   }
 
-  /**
-   * Connect to WebSocket server
-   */
-  connect() {
-    // Disable WebSocket for now if backend doesn't support it
-    console.log('⚠️ WebSocket disabled - using REST API only');
-    return;
+  // ── lifecycle ──────────────────────────────────────
 
-    /* UNCOMMENT WHEN BACKEND HAS WEBSOCKET SUPPORT
-    if (this.socket?.connected) {
-      console.log('✅ WebSocket already connected');
+  connect(projectId, token) {
+    if (this.socket?.readyState === WebSocket.OPEN && this.projectId === projectId) {
+      console.log('✅ WebSocket already connected to', projectId);
+      return;
+    }
+    if (this.socket) this.disconnect();
+    if (!projectId || !token) {
+      console.error('❌ connect() requires projectId and token');
       return;
     }
 
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      console.log('⚠️ No token found, skipping WebSocket connection');
-      return;
-    }
+    this.projectId = projectId;
+    this.token     = token;
+    const url      = `${WS_BASE}/chat/ws/${projectId}`;
+    console.log('🔌 Opening WebSocket →', url);
+    this.socket    = new WebSocket(url);
 
-    try {
-      console.log('🔌 Connecting to WebSocket...');
-      
-      this.socket = io(WS_BASE_URL, {
-        auth: {
-          token: `Bearer ${token}`
-        },
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: this.maxReconnectAttempts,
-      });
+    this.socket.onopen = () => {
+      console.log('✅ WebSocket open');
+      this.connected         = true;
+      this.reconnectAttempts = 0;
+      this.socket.send(JSON.stringify({ token: this.token }));
+      console.log('🔑 Auth token sent');
+      this._emit('connected');
+    };
 
-      this.socket.on('connect', () => {
-        console.log('✅ WebSocket connected');
-        this.connected = true;
-        this.reconnectAttempts = 0;
-      });
-
-      this.socket.on('disconnect', (reason) => {
-        console.log('❌ WebSocket disconnected:', reason);
-        this.connected = false;
-      });
-
-      this.socket.on('connect_error', (error) => {
-        console.error('❌ WebSocket connection error:', error.message);
-        this.reconnectAttempts++;
-        
-        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-          console.log('⚠️ Max reconnection attempts reached');
+    this.socket.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.error) {
+          console.error('❌ Server error:', data.error);
           this.disconnect();
+          this._emit('error');
+          return;
         }
-      });
+        this._messageCallbacks.forEach(cb => cb(data));
+      } catch (e) {
+        console.error('❌ Parse error', e);
+      }
+    };
 
-      this.socket.on('error', (error) => {
-        console.error('❌ WebSocket error:', error);
-      });
-
-    } catch (error) {
-      console.error('❌ Failed to create WebSocket connection:', error);
-    }
-    */
-  }
-
-  /**
-   * Disconnect from WebSocket
-   */
-  disconnect() {
-    if (this.socket) {
-      console.log('🔌 Disconnecting WebSocket...');
-      this.socket.disconnect();
-      this.socket = null;
+    this.socket.onerror = () => {
+      console.error('❌ WebSocket error');
       this.connected = false;
-    }
+      this._emit('error');
+    };
+
+    this.socket.onclose = (evt) => {
+      console.log('🔌 WebSocket closed', evt.code, evt.reason);
+      this.connected = false;
+      this._emit('disconnected');
+      if (evt.code !== 1000) this._scheduleReconnect();
+    };
   }
 
-  /**
-   * Join a project room
-   */
-  joinProjectRoom(projectId) {
-    if (!this.socket?.connected) {
-      console.log('⚠️ WebSocket not connected');
+  disconnect() {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.socket)         { this.socket.close(1000, 'client disconnect'); this.socket = null; }
+    this.connected         = false;
+    this.reconnectAttempts = 0;
+  }
+
+  // ── sending ────────────────────────────────────────
+
+  sendMessage(content) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not connected');
+    }
+    if (!content?.trim()) return;
+    this.socket.send(JSON.stringify({ content: content.trim() }));
+    console.log('📤 Sent:', content.trim());
+  }
+
+  // ── listeners ──────────────────────────────────────
+
+  onMessage(fn)       { if (typeof fn === 'function') this._messageCallbacks.push(fn); }
+  onStatusChange(fn)  { if (typeof fn === 'function') this._statusCallbacks.push(fn); }
+  removeAllCallbacks(){ this._messageCallbacks = []; this._statusCallbacks = []; }
+
+  // ── helpers ────────────────────────────────────────
+
+  isConnected()        { return this.connected && this.socket?.readyState === WebSocket.OPEN; }
+  getCurrentProjectId(){ return this.projectId; }
+
+  _emit(status) { this._statusCallbacks.forEach(cb => cb(status)); }
+
+  _scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnects) {
+      console.warn('⚠️ Max reconnect attempts reached');
       return;
     }
-
-    console.log('📡 Joining project room:', projectId);
-    this.socket.emit('join_room', { project_id: projectId });
-  }
-
-  /**
-   * Leave a project room
-   */
-  leaveProjectRoom(projectId) {
-    if (!this.socket?.connected) return;
-
-    console.log('📡 Leaving project room:', projectId);
-    this.socket.emit('leave_room', { project_id: projectId });
-  }
-
-  /**
-   * Send a message
-   */
-  sendMessage(projectId, content) {
-    if (!this.socket?.connected) {
-      console.log('⚠️ WebSocket not connected, cannot send message');
-      return;
-    }
-
-    this.socket.emit('send_message', {
-      project_id: projectId,
-      content,
-    });
-  }
-
-  /**
-   * Listen for new messages
-   */
-  onNewMessage(callback) {
-    if (!this.socket) return;
-    this.socket.on('new_message', callback);
-  }
-
-  /**
-   * Listen for typing indicators
-   */
-  onUserTyping(callback) {
-    if (!this.socket) return;
-    this.socket.on('user_typing', callback);
-  }
-
-  /**
-   * Send typing indicator
-   */
-  sendTyping(projectId) {
-    if (!this.socket?.connected) return;
-    this.socket.emit('typing', { project_id: projectId });
-  }
-
-  /**
-   * Listen for notifications
-   */
-  onNewNotification(callback) {
-    if (!this.socket) return;
-    this.socket.on('new_notification', callback);
-  }
-
-  /**
-   * Remove all listeners
-   */
-  removeAllListeners() {
-    if (this.socket) {
-      this.socket.removeAllListeners();
-    }
-  }
-
-  /**
-   * Check if connected
-   */
-  isConnected() {
-    return this.connected && this.socket?.connected;
+    this.reconnectAttempts++;
+    const delay = this.baseDelay * Math.pow(2, this.reconnectAttempts - 1);
+    console.log(`🔄 Reconnecting in ${delay}ms… (${this.reconnectAttempts}/${this.maxReconnects})`);
+    this.reconnectTimer = setTimeout(() => {
+      if (this.projectId && this.token) this.connect(this.projectId, this.token);
+    }, delay);
   }
 }
 
-// Create singleton instance
 const websocketService = new WebSocketService();
-
 export default websocketService;
