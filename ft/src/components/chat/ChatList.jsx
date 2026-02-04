@@ -1,7 +1,6 @@
 import React, { useEffect } from 'react';
 import { MessageSquare, Search } from 'lucide-react';
 import { useChat } from '../../hooks/phase2-hooks';
-import { formatDistanceToNow } from 'date-fns';
 
 const ChatList = ({ onSelectRoom, selectedRoomId }) => {
   const { rooms, isLoading, loadRooms } = useChat();
@@ -14,6 +13,26 @@ const ChatList = ({ onSelectRoom, selectedRoomId }) => {
   const filteredRooms = rooms.filter((room) =>
     room.name?.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const formatTime = (timeString) => {
+    if (!timeString) return '';
+    try {
+      const date = new Date(timeString);
+      const now = new Date();
+      const diffMs = now - date;
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      if (diffMins < 1) return 'Just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      if (diffHours < 24) return `${diffHours}h ago`;
+      if (diffDays < 7) return `${diffDays}d ago`;
+      return date.toLocaleDateString();
+    } catch {
+      return '';
+    }
+  };
 
   return (
     <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
@@ -64,7 +83,7 @@ const ChatList = ({ onSelectRoom, selectedRoomId }) => {
                   </h3>
                   {room.last_message_time && (
                     <span className="text-xs text-gray-500 ml-2 flex-shrink-0">
-                      {formatDistanceToNow(new Date(room.last_message_time), { addSuffix: true })}
+                      {formatTime(room.last_message_time)}
                     </span>
                   )}
                 </div>

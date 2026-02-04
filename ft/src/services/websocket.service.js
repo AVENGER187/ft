@@ -1,137 +1,340 @@
+import { WS_BASE_URL, WS_CONFIG } from '../utils/constants';
+
 /**
- * ✅ NATIVE WEBSOCKET SERVICE
- * Uses the browser's built-in WebSocket — no Socket.io dependency.
- *
- * Backend handshake (chat.py):
- *   1.  Client opens   ws://{host}/chat/ws/{project_id}
- *   2.  Server accepts immediately.
- *   3.  Client sends   { "token": "<jwt>" }          ← auth
- *   4.  Server validates; sends { "error": "…" } on failure.
- *   5.  Client sends   { "content": "hello" }        ← each message
- *   6.  Server broadcasts to all connections in the room.
+ * WebSocket Service for Real-Time Chat
+ * Manages WebSocket connections to the FastAPI backend
+ * 
+ * Backend Protocol:
+ * 1. Connect to: ws://localhost:8000/chat/ws/{project_id}
+ * 2. First message MUST be: {"token": "your_jwt_token"}
+ * 3. Send messages: {"content": "message text"}
+ * 4. Receive: {id, project_id, sender_id, sender_name, content, sent_at, ...}
  */
-
-const WS_BASE = (() => {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  // Dev: backend on :8000 even though React dev-server is on :5173
-  return `${proto}://localhost:8000`;
-})();
-
 class WebSocketService {
   constructor() {
-    this.socket            = null;
-    this.connected         = false;
-    this.projectId         = null;
-    this.token             = null;
+    this.ws = null;
+    this.projectId = null;
     this.reconnectAttempts = 0;
-    this.maxReconnects     = 5;
-    this.baseDelay         = 1000;
-    this.reconnectTimer    = null;
-    this._messageCallbacks = [];
-    this._statusCallbacks  = [];
+    this.maxReconnectAttempts = WS_CONFIG.MAX_RECONNECT_ATTEMPTS || 5;
+    this.reconnectDelay = WS_CONFIG.RECONNECT_DELAY_MS || 2000;
+    this.messageCallbacks = [];
+    this.statusCallbacks = [];
+    this.connected = false;
+    this.authenticated = false;
   }
 
-  // ── lifecycle ──────────────────────────────────────
-
+  /**
+   * Connect to a project's chat room
+   * 
+   * @param {string} projectId - UUID of the project
+   * @param {string} token - JWT access token
+   */
   connect(projectId, token) {
-    if (this.socket?.readyState === WebSocket.OPEN && this.projectId === projectId) {
-      console.log('✅ WebSocket already connected to', projectId);
-      return;
-    }
-    if (this.socket) this.disconnect();
-    if (!projectId || !token) {
-      console.error('❌ connect() requires projectId and token');
-      return;
+    // Close existing connection if any
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log('⚠️ WebSocket already connected, disconnecting first...');
+      this.disconnect();
     }
 
     this.projectId = projectId;
-    this.token     = token;
-    const url      = `${WS_BASE}/chat/ws/${projectId}`;
-    console.log('🔌 Opening WebSocket →', url);
-    this.socket    = new WebSocket(url);
+    const wsUrl = `${WS_BASE_URL}/chat/ws/${projectId}`;
 
-    this.socket.onopen = () => {
-      console.log('✅ WebSocket open');
-      this.connected         = true;
-      this.reconnectAttempts = 0;
-      this.socket.send(JSON.stringify({ token: this.token }));
-      console.log('🔑 Auth token sent');
-      this._emit('connected');
-    };
+    console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
 
-    this.socket.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (data.error) {
-          console.error('❌ Server error:', data.error);
-          this.disconnect();
-          this._emit('error');
-          return;
+    try {
+      this.ws = new WebSocket(wsUrl);
+
+      // ─────────────────────────────────────────
+      // Connection opened
+      // ─────────────────────────────────────────
+      this.ws.onopen = () => {
+        console.log('✅ WebSocket connected');
+        this.connected = true;
+        this.reconnectAttempts = 0;
+        
+        // CRITICAL: Send authentication token as FIRST message
+        console.log('🔐 Sending authentication token...');
+        this.ws.send(JSON.stringify({ token }));
+        
+        this._notifyStatusChange('connected');
+      };
+
+      // ─────────────────────────────────────────
+      // Message received
+      // ─────────────────────────────────────────
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Handle errors from server
+          if (data.error) {
+            console.error('❌ WebSocket error from server:', data.error);
+            
+            if (data.error.includes('Token required') || 
+                data.error.includes('Invalid token')) {
+              console.error('🔐 Authentication failed');
+              this._notifyStatusChange('error');
+              this.disconnect();
+              return;
+            }
+            
+            if (data.error.includes('Not a member')) {
+              console.error('🚫 User is not a member of this project');
+              this._notifyStatusChange('error');
+              this.disconnect();
+              return;
+            }
+            
+            this._notifyStatusChange('error');
+            return;
+          }
+
+          // Valid message received
+          // Backend sends: {id, project_id, sender_id, sender_name, content, sent_at, edited_at, is_deleted}
+          console.log('📨 Message received:', data);
+          
+          // Mark as authenticated if we successfully receive a message
+          if (!this.authenticated) {
+            this.authenticated = true;
+            console.log('✅ WebSocket authenticated successfully');
+          }
+          
+          this._notifyMessage(data);
+        } catch (error) {
+          console.error('❌ Failed to parse WebSocket message:', error);
+          console.error('Raw data:', event.data);
         }
-        this._messageCallbacks.forEach(cb => cb(data));
-      } catch (e) {
-        console.error('❌ Parse error', e);
-      }
-    };
+      };
 
-    this.socket.onerror = () => {
-      console.error('❌ WebSocket error');
-      this.connected = false;
-      this._emit('error');
-    };
+      // ─────────────────────────────────────────
+      // Error occurred
+      // ─────────────────────────────────────────
+      this.ws.onerror = (error) => {
+        console.error('❌ WebSocket error:', error);
+        this.connected = false;
+        this.authenticated = false;
+        this._notifyStatusChange('error');
+      };
 
-    this.socket.onclose = (evt) => {
-      console.log('🔌 WebSocket closed', evt.code, evt.reason);
-      this.connected = false;
-      this._emit('disconnected');
-      if (evt.code !== 1000) this._scheduleReconnect();
-    };
-  }
+      // ─────────────────────────────────────────
+      // Connection closed
+      // ─────────────────────────────────────────
+      this.ws.onclose = (event) => {
+        console.log(`🔌 WebSocket closed: Code ${event.code}, Reason: ${event.reason || 'No reason'}`);
+        this.connected = false;
+        this.authenticated = false;
+        this._notifyStatusChange('disconnected');
 
-  disconnect() {
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    if (this.socket)         { this.socket.close(1000, 'client disconnect'); this.socket = null; }
-    this.connected         = false;
-    this.reconnectAttempts = 0;
-  }
-
-  // ── sending ────────────────────────────────────────
-
-  sendMessage(content) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected');
+        // Attempt reconnection if not a normal closure
+        // Code 1000 = normal closure
+        // Code 1001 = going away (user navigated away)
+        if (event.code !== 1000 && 
+            event.code !== 1001 && 
+            this.reconnectAttempts < this.maxReconnectAttempts) {
+          
+          this.reconnectAttempts++;
+          const delay = this.reconnectDelay * this.reconnectAttempts;
+          
+          console.log(`🔄 Reconnecting... (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+          console.log(`⏳ Waiting ${delay}ms before reconnect...`);
+          
+          setTimeout(() => {
+            if (this.projectId && token) {
+              this.connect(this.projectId, token);
+            }
+          }, delay);
+        } else if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+          console.error('❌ Max reconnection attempts reached');
+          this._notifyStatusChange('error');
+        }
+      };
+    } catch (error) {
+      console.error('❌ Failed to create WebSocket:', error);
+      this._notifyStatusChange('error');
     }
-    if (!content?.trim()) return;
-    this.socket.send(JSON.stringify({ content: content.trim() }));
-    console.log('📤 Sent:', content.trim());
   }
 
-  // ── listeners ──────────────────────────────────────
+  /**
+   * Disconnect from WebSocket
+   */
+  disconnect() {
+    if (this.ws) {
+      console.log('🔌 Disconnecting WebSocket...');
+      this.connected = false;
+      this.authenticated = false;
+      
+      // Close with code 1000 (normal closure) to prevent reconnection
+      this.ws.close(1000, 'Client disconnect');
+      this.ws = null;
+      this.projectId = null;
+    }
+  }
 
-  onMessage(fn)       { if (typeof fn === 'function') this._messageCallbacks.push(fn); }
-  onStatusChange(fn)  { if (typeof fn === 'function') this._statusCallbacks.push(fn); }
-  removeAllCallbacks(){ this._messageCallbacks = []; this._statusCallbacks = []; }
+  /**
+   * Send a message through WebSocket
+   * 
+   * Backend expects: {"content": "message text"}
+   * Backend responds by broadcasting to all clients: {id, project_id, sender_id, sender_name, content, sent_at, ...}
+   * 
+   * @param {string} content - Message text content
+   * @param {Array} attachments - File attachments (not yet supported by backend)
+   */
+  sendMessage(content, attachments = []) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('❌ WebSocket not connected');
+      throw new Error('WebSocket not connected');
+    }
 
-  // ── helpers ────────────────────────────────────────
+    if (!this.authenticated) {
+      console.error('❌ WebSocket not authenticated yet');
+      throw new Error('WebSocket not authenticated');
+    }
 
-  isConnected()        { return this.connected && this.socket?.readyState === WebSocket.OPEN; }
-  getCurrentProjectId(){ return this.projectId; }
-
-  _emit(status) { this._statusCallbacks.forEach(cb => cb(status)); }
-
-  _scheduleReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnects) {
-      console.warn('⚠️ Max reconnect attempts reached');
+    if (!content || !content.trim()) {
+      console.warn('⚠️ Attempted to send empty message');
       return;
     }
-    this.reconnectAttempts++;
-    const delay = this.baseDelay * Math.pow(2, this.reconnectAttempts - 1);
-    console.log(`🔄 Reconnecting in ${delay}ms… (${this.reconnectAttempts}/${this.maxReconnects})`);
-    this.reconnectTimer = setTimeout(() => {
-      if (this.projectId && this.token) this.connect(this.projectId, this.token);
-    }, delay);
+
+    const message = {
+      content: content.trim(),
+      // Note: Backend doesn't support attachments via WebSocket yet
+      // Attachments would need to be uploaded separately via REST API
+      // and URLs included in the message content
+    };
+
+    console.log('📤 Sending message:', message);
+    this.ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * Send typing indicator (placeholder for future implementation)
+   * 
+   * Backend doesn't support this yet
+   */
+  sendTyping(isTyping) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.authenticated) {
+      return;
+    }
+
+    // TODO: Implement when backend supports typing indicators
+    // this.ws.send(JSON.stringify({ type: 'typing', is_typing: isTyping }));
+  }
+
+  /**
+   * Register callback for incoming messages
+   * 
+   * Callback receives: {id, project_id, sender_id, sender_name, content, sent_at, edited_at, is_deleted}
+   */
+  onMessage(callback) {
+    if (typeof callback !== 'function') {
+      console.error('❌ onMessage callback must be a function');
+      return;
+    }
+    this.messageCallbacks.push(callback);
+  }
+
+  /**
+   * Register callback for status changes
+   * 
+   * Callback receives: 'connected' | 'disconnected' | 'error' | 'reconnecting'
+   */
+  onStatusChange(callback) {
+    if (typeof callback !== 'function') {
+      console.error('❌ onStatusChange callback must be a function');
+      return;
+    }
+    this.statusCallbacks.push(callback);
+  }
+
+  /**
+   * Remove all callbacks (cleanup)
+   */
+  removeAllCallbacks() {
+    this.messageCallbacks = [];
+    this.statusCallbacks = [];
+  }
+
+  /**
+   * Remove a specific message callback
+   */
+  removeMessageCallback(callback) {
+    this.messageCallbacks = this.messageCallbacks.filter(cb => cb !== callback);
+  }
+
+  /**
+   * Remove a specific status callback
+   */
+  removeStatusCallback(callback) {
+    this.statusCallbacks = this.statusCallbacks.filter(cb => cb !== callback);
+  }
+
+  /**
+   * Check if WebSocket is connected and authenticated
+   */
+  isConnected() {
+    return this.connected && 
+           this.authenticated && 
+           this.ws && 
+           this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Get current connection status
+   */
+  getStatus() {
+    if (!this.ws) return 'disconnected';
+    
+    switch (this.ws.readyState) {
+      case WebSocket.CONNECTING:
+        return 'connecting';
+      case WebSocket.OPEN:
+        return this.authenticated ? 'connected' : 'authenticating';
+      case WebSocket.CLOSING:
+        return 'disconnecting';
+      case WebSocket.CLOSED:
+        return 'disconnected';
+      default:
+        return 'unknown';
+    }
+  }
+
+  /**
+   * Notify all message callbacks
+   * @private
+   */
+  _notifyMessage(message) {
+    this.messageCallbacks.forEach(callback => {
+      try {
+        callback(message);
+      } catch (error) {
+        console.error('❌ Error in message callback:', error);
+      }
+    });
+  }
+
+  /**
+   * Notify all status callbacks
+   * @private
+   */
+  _notifyStatusChange(status) {
+    this.statusCallbacks.forEach(callback => {
+      try {
+        callback(status);
+      } catch (error) {
+        console.error('❌ Error in status callback:', error);
+      }
+    });
   }
 }
 
+// ============================================
+// Export singleton instance
+// ============================================
 const websocketService = new WebSocketService();
+
+// Expose for debugging in development
+if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
+  window.websocketService = websocketService;
+}
+
 export default websocketService;

@@ -7,15 +7,16 @@ import { useAuth } from '../context/AuthContext';
 import ChatInput from '../components/chat/ChatInput';
 
 /* ════════════════════════════════════════════════════════
-   ChatPage  –  /chat  and  /chat/:projectId
+   ChatPage - Real-time chat with WebSocket integration
+   Fixed version with proper message synchronization
    ════════════════════════════════════════════════════════ */
 const ChatPage = () => {
   const { projectId: urlProjectId } = useParams();
   const navigate = useNavigate();
-  const { user }  = useAuth();
+  const { user } = useAuth();
 
   // ── rooms (sidebar) ──────────────────────────────────
-  const [rooms, setRooms]           = useState([]);
+  const [rooms, setRooms] = useState([]);
   const [roomsLoading, setRoomsLoading] = useState(true);
   const [roomSearch, setRoomSearch] = useState('');
 
@@ -23,28 +24,37 @@ const ChatPage = () => {
   const [selectedRoom, setSelectedRoom] = useState(null);
 
   // ── messages ─────────────────────────────────────────
-  const [messages, setMessages]     = useState([]);
+  const [messages, setMessages] = useState([]);
   const [msgsLoading, setMsgsLoading] = useState(false);
-  const messagesEndRef              = useRef(null);
+  const messagesEndRef = useRef(null);
 
   // ── WS status ────────────────────────────────────────
-  const [wsStatus, setWsStatus]     = useState('disconnected'); // connected | disconnected | error
+  const [wsStatus, setWsStatus] = useState('disconnected');
 
   /* ─── load rooms on mount ──────────────────────────── */
   useEffect(() => {
     (async () => {
       setRoomsLoading(true);
-      const { rooms: list } = await chatService.getChatRooms();
-      setRooms(list);
-      setRoomsLoading(false);
+      try {
+        const { rooms: list } = await chatService.getChatRooms();
+        console.log('📂 Loaded rooms:', list);
+        setRooms(list || []);
+      } catch (error) {
+        console.error('❌ Failed to load rooms:', error);
+      } finally {
+        setRoomsLoading(false);
+      }
     })();
   }, []);
 
   /* ─── auto-select room from URL param ──────────────── */
   useEffect(() => {
-    if (urlProjectId && rooms.length) {
+    if (urlProjectId && rooms.length > 0) {
       const match = rooms.find(r => r.id === urlProjectId);
-      if (match && match.id !== selectedRoom?.id) selectRoom(match);
+      if (match && (!selectedRoom || match.id !== selectedRoom.id)) {
+        console.log('🎯 Auto-selecting room from URL:', match);
+        selectRoom(match);
+      }
     }
   }, [urlProjectId, rooms]);
 
@@ -56,6 +66,7 @@ const ChatPage = () => {
   /* ─── cleanup WebSocket on unmount ──────────────────── */
   useEffect(() => {
     return () => {
+      console.log('🧹 Cleanup: Disconnecting WebSocket');
       websocketService.disconnect();
       websocketService.removeAllCallbacks();
     };
@@ -63,66 +74,85 @@ const ChatPage = () => {
 
   /* ─── select a room: fetch history + open WS ────── */
   const selectRoom = useCallback(async (room) => {
-    // tear down previous WS
+    console.log('📍 Selecting room:', room.name);
+    
+    // Tear down previous WS
     websocketService.disconnect();
     websocketService.removeAllCallbacks();
 
     setSelectedRoom(room);
-    setMessages([]);
+    setMessages([]); // Clear messages immediately
     setMsgsLoading(true);
     navigate(`/chat/${room.id}`, { replace: true });
 
-    // 1) fetch history
-    const { messages: hist } = await chatService.getRoomMessages(room.id);
-    setMessages(hist);
-    setMsgsLoading(false);
+    try {
+      // 1) Fetch message history from backend
+      console.log('📨 Fetching message history for room:', room.id);
+      const { messages: hist } = await chatService.getRoomMessages(room.id);
+      console.log(`✅ Loaded ${hist.length} messages from database`);
+      setMessages(hist);
+    } catch (error) {
+      console.error('❌ Failed to load messages:', error);
+      setMessages([]);
+    } finally {
+      setMsgsLoading(false);
+    }
 
-    // 2) open WebSocket
+    // 2) Open WebSocket for real-time updates
     const token = localStorage.getItem('access_token');
     if (token) {
+      console.log('🔌 Setting up WebSocket for room:', room.id);
+      
+      // Register message callback BEFORE connecting
       websocketService.onMessage((msg) => {
-        // dedupe: ignore if we already have this id (e.g. our own echo)
-        setMessages(prev =>
-          prev.some(m => m.id === msg.id) ? prev : [...prev, msg]
-        );
+        console.log('📨 WebSocket message received:', msg);
+        
+        // Add message to state (with deduplication)
+        setMessages(prev => {
+          // Check if message already exists by ID
+          const exists = prev.some(m => m.id === msg.id);
+          if (exists) {
+            console.log('ℹ️ Message already in state, skipping:', msg.id);
+            return prev;
+          }
+          console.log('✅ Adding new message to state:', msg.id);
+          return [...prev, msg];
+        });
       });
+
+      // Register status callback
       websocketService.onStatusChange((status) => {
+        console.log('🔌 WebSocket status:', status);
         setWsStatus(status);
       });
+
+      // Connect to WebSocket
       websocketService.connect(room.id, token);
+    } else {
+      console.error('❌ No access token found');
     }
   }, [navigate]);
 
   /* ─── send handler (ChatInput calls this) ──────────── */
   const handleSend = async (content, attachments) => {
     if (!content?.trim() && !attachments?.length) return;
+    if (!selectedRoom) return;
 
-    // Build optimistic message so the UI feels instant
-    const optimistic = {
-      id:          `opt-${Date.now()}`,
-      project_id:  selectedRoom.id,
-      sender_id:   user?.id,
-      sender_name: user?.name || 'You',
-      content:     content || '',
-      sent_at:     new Date().toISOString(),
-      edited_at:   null,
-      is_deleted:  false,
-    };
+    console.log('📤 Sending message:', content);
 
-    // Try WebSocket first (real-time); fall back to nothing if disconnected
-    if (websocketService.isConnected()) {
-      // Add optimistic message immediately
-      setMessages(prev => [...prev, optimistic]);
-      websocketService.sendMessage(content);
-      // The server will broadcast the real message back; onMessage dedups by id.
-      // Remove the optimistic one after a short delay so the real one replaces it.
-      setTimeout(() => {
-        setMessages(prev => prev.filter(m => m.id !== optimistic.id));
-      }, 2000);
-    } else {
-      // WS not connected – show the message locally only (best effort)
-      console.warn('⚠️ WebSocket not connected – message shown locally only');
-      setMessages(prev => [...prev, optimistic]);
+    try {
+      // Send via WebSocket
+      if (websocketService.isConnected()) {
+        websocketService.sendMessage(content);
+        
+        // Note: The server will broadcast the message back to ALL clients
+        // including the sender, so we don't need optimistic UI updates
+        // The onMessage callback will handle adding it to the state
+      } else {
+        console.warn('⚠️ WebSocket not connected');
+      }
+    } catch (error) {
+      console.error('❌ Failed to send message:', error);
     }
   };
 
@@ -131,10 +161,14 @@ const ChatPage = () => {
     try {
       await chatService.deleteMessage(messageId);
       setMessages(prev =>
-        prev.map(m => m.id === messageId ? { ...m, is_deleted: true } : m)
+        prev.map(m => 
+          m.id === messageId 
+            ? { ...m, is_deleted: true, content: '[Message deleted]' } 
+            : m
+        )
       );
     } catch (e) {
-      console.error('Delete failed', e);
+      console.error('❌ Delete failed:', e);
     }
   };
 
@@ -279,7 +313,7 @@ const ChatPage = () => {
 };
 
 /* ──────────────────────────────────────────────────────
-   MessageBubble  – renders a single message
+   MessageBubble – renders a single message
    ────────────────────────────────────────────────────── */
 const MessageBubble = ({ message, isOwn, onDelete, canDelete }) => {
   const [hover, setHover] = useState(false);

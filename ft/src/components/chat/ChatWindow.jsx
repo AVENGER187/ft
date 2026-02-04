@@ -1,14 +1,14 @@
 import React, { useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
 import TypingIndicator from './TypingIndicator';
 import { useChat } from '../../hooks/phase2-hooks';
+import { MessageSquare } from 'lucide-react';
 
 const ChatWindow = ({ room, onClose }) => {
   const messagesEndRef = useRef(null);
-  const { messages, isLoading, typingUsers, loadMessages, sendMessage } = useChat(room?.id);
+  const { messages, isLoading, typingUsers, loadMessages, sendMessage, wsStatus } = useChat(room?.id);
 
   useEffect(() => {
     if (room?.id) {
@@ -21,13 +21,20 @@ const ChatWindow = ({ room, onClose }) => {
   }, [messages]);
 
   const handleSendMessage = async (content, attachments) => {
-    await sendMessage(content, attachments);
+    try {
+      await sendMessage(content, attachments);
+    } catch (error) {
+      console.error('Failed to send message:', error);
+    }
   };
 
   if (!room) {
     return (
       <div className="flex-1 flex items-center justify-center bg-gray-50">
-        <p className="text-gray-500">Select a conversation to start messaging</p>
+        <div className="text-center">
+          <MessageSquare className="w-20 h-20 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-500 text-lg">Select a conversation to start messaging</p>
+        </div>
       </div>
     );
   }
@@ -35,7 +42,7 @@ const ChatWindow = ({ room, onClose }) => {
   return (
     <div className="flex-1 flex flex-col bg-white">
       {/* Header */}
-      <ChatHeader room={room} onClose={onClose} />
+      <ChatHeader room={room} onClose={onClose} wsStatus={wsStatus} />
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -53,7 +60,8 @@ const ChatWindow = ({ room, onClose }) => {
           </>
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-            <p className="text-lg">No messages yet</p>
+            <MessageSquare className="w-16 h-16 mb-3" />
+            <p className="text-lg font-medium">No messages yet</p>
             <p className="text-sm">Start the conversation!</p>
           </div>
         )}

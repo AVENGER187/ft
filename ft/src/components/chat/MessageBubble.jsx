@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, FileText, Image as ImageIcon } from 'lucide-react';
+import { Download, FileText } from 'lucide-react';
 
 const MessageBubble = ({ message, isOwn }) => {
   const hasAttachments = message.attachments && message.attachments.length > 0;
@@ -12,30 +12,37 @@ const MessageBubble = ({ message, isOwn }) => {
           : 'bg-gray-100 text-gray-800'
       }`}
     >
-      {message.content && (
-        <p className="whitespace-pre-wrap break-words">{message.content}</p>
-      )}
+      {message.is_deleted ? (
+        <p className="text-sm italic opacity-70">[Message deleted]</p>
+      ) : (
+        <>
+          {message.content && (
+            <p className="whitespace-pre-wrap break-words text-sm">{message.content}</p>
+          )}
 
-      {hasAttachments && (
-        <div className="mt-2 space-y-2">
-          {message.attachments.map((attachment, index) => (
-            <FileAttachment key={index} attachment={attachment} isOwn={isOwn} />
-          ))}
-        </div>
+          {hasAttachments && (
+            <div className="mt-2 space-y-2">
+              {message.attachments.map((attachment, index) => (
+                <FileAttachment key={index} attachment={attachment} isOwn={isOwn} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 };
 
 const FileAttachment = ({ attachment, isOwn }) => {
-  const isImage = attachment.type?.startsWith('image/');
+  const isImage = attachment.type?.startsWith('image/') || 
+                  attachment.url?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
 
   if (isImage) {
     return (
       <div className="rounded-lg overflow-hidden">
         <img
           src={attachment.url}
-          alt={attachment.name}
+          alt={attachment.name || 'Image'}
           className="max-w-full h-auto max-h-64 object-contain"
         />
       </div>
@@ -53,7 +60,7 @@ const FileAttachment = ({ attachment, isOwn }) => {
       } transition-colors`}
     >
       <FileText className="w-5 h-5" />
-      <span className="text-sm truncate flex-1">{attachment.name}</span>
+      <span className="text-sm truncate flex-1">{attachment.name || 'File'}</span>
       <Download className="w-4 h-4" />
     </a>
   );

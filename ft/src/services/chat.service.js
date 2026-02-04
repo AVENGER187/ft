@@ -1,94 +1,176 @@
-import { apiCall } from './api';
+import { apiCall, projectService } from './api';
 
 /**
- * Chat Service — matches the actual backend.
- *
- * Chat "rooms" are projects.  A user can be in a project as:
- *   • creator   → returned by  GET /projects/my/projects
- *   • member    → returned by  GET /projects/my/working
- * We merge both lists so every project the user participates in shows up.
- *
- * Messages live at  GET /chat/messages/{project_id}
- * Sending is via the native WebSocket at ws://.../chat/ws/{project_id}
- * Delete is        DELETE /chat/message/{message_id}
+ * Chat Service
+ * Handles chat room management and message fetching
+ * Integrates with your existing backend endpoints
  */
 export const chatService = {
-  /* ────────────────────────────────────────────────────── */
-  /*  Rooms (= projects the current user belongs to)       */
-  /* ────────────────────────────────────────────────────── */
+  /**
+   * Get all chat rooms for the current user
+   * Merges created projects + projects user is working on
+   * 
+   * Returns: { rooms: Array<{ id, name, project_type, last_message, last_message_time, unread_count }> }
+   */
   getChatRooms: async () => {
     try {
-      // 1) projects the user CREATED
-      const createdRaw = await apiCall('/projects/my/projects').catch(() => []);
-      const created = Array.isArray(createdRaw) ? createdRaw : [];
+      console.log('📂 Fetching chat rooms...');
+      
+      // Fetch both lists in parallel
+      const [myProjects, workingProjects] = await Promise.all([
+        projectService.getMyProjects(),
+        projectService.getWorkingProjects(),
+      ]);
 
-      // 2) projects the user is a MEMBER of (accepted applications)
-      const workingRaw = await apiCall('/projects/my/working').catch(() => ({ projects: [] }));
-      const working = Array.isArray(workingRaw)
-        ? workingRaw
-        : (workingRaw.projects || []);
+      console.log('✅ My projects:', myProjects?.length || 0);
+      console.log('✅ Working projects:', workingProjects?.projects?.length || 0);
 
-      // 3) merge & de-duplicate by id
-      const seen = new Set();
-      const rooms = [];
-
-      const toRoom = (p) => ({
-        id:                p.id,
-        name:              p.name || p.project_name || 'Unnamed Project',
-        project_id:        p.id,
-        last_message:      null,   // populated after first message fetch if needed
+      // Transform created projects to room format
+      const myRooms = (myProjects || []).map(project => ({
+        id: project.id,
+        name: project.name,
+        project_type: project.project_type,
+        description: project.description,
+        status: project.status,
+        last_message: null,
         last_message_time: null,
-        unread_count:      0,
-        type:              'project',
-      });
+        unread_count: 0,
+        // Meta info for UI
+        is_creator: true,
+        created_at: project.created_at,
+      }));
 
-      for (const p of [...created, ...working]) {
-        if (!seen.has(p.id)) {
-          seen.add(p.id);
-          rooms.push(toRoom(p));
-        }
-      }
+      // Transform working projects to room format
+      const workingRooms = (workingProjects?.projects || []).map(project => ({
+        id: project.id,
+        name: project.project_name || project.name,
+        project_type: project.project_type,
+        description: project.description,
+        status: project.status,
+        last_message: null,
+        last_message_time: null,
+        unread_count: 0,
+        // Meta info for UI
+        is_creator: false,
+        my_role: project.my_role,
+        creator_name: project.creator_name,
+        created_at: project.created_at,
+      }));
 
-      return { rooms };
+      // Merge and deduplicate by id
+      const allRooms = [...myRooms, ...workingRooms];
+      const uniqueRooms = Array.from(
+        new Map(allRooms.map(room => [room.id, room])).values()
+      );
+
+      // Sort by most recently created (or you could sort by last message time when available)
+      uniqueRooms.sort((a, b) => 
+        new Date(b.created_at) - new Date(a.created_at)
+      );
+
+      console.log(`✅ Total unique chat rooms: ${uniqueRooms.length}`);
+      return { rooms: uniqueRooms };
     } catch (error) {
-      console.error('Failed to get chat rooms:', error);
+      console.error('❌ Failed to fetch chat rooms:', error);
       return { rooms: [] };
     }
   },
 
-  /* ────────────────────────────────────────────────────── */
-  /*  Messages                                              */
-  /* ────────────────────────────────────────────────────── */
   /**
-   * Fetch historical messages for a project.
-   * Backend returns an array directly.
+   * Get message history for a specific project/room
+   * 
+   * Backend endpoint: GET /chat/messages/{project_id}?limit=50
+   * Returns: Array<MessageResponse>
    */
   getRoomMessages: async (projectId, limit = 50) => {
     try {
-      const response = await apiCall(`/chat/messages/${projectId}?limit=${limit}`);
-      const messages = Array.isArray(response) ? response : (response.messages || []);
-      return { messages };
+      console.log(`📨 Fetching messages for room: ${projectId}`);
+      
+      const messages = await apiCall(`/chat/messages/${projectId}?limit=${limit}`);
+      
+      console.log(`✅ Loaded ${messages?.length || 0} messages`);
+      return { messages: messages || [] };
     } catch (error) {
-      console.error('Failed to get messages:', error);
+      console.error(`❌ Failed to fetch messages for room ${projectId}:`, error);
+      
+      // If 403, user is not a member of the project
+      if (error.message.includes('403') || error.message.includes('Not a member')) {
+        throw new Error('You are not a member of this project');
+      }
+      
       return { messages: [] };
     }
   },
 
   /**
-   * Delete a message (soft-delete on the backend).
+   * Delete a message
+   * 
+   * Backend endpoint: DELETE /chat/message/{message_id}
+   * Returns: { message: "Message deleted" }
    */
   deleteMessage: async (messageId) => {
     try {
-      return await apiCall(`/chat/message/${messageId}`, { method: 'DELETE' });
+      console.log(`🗑️ Deleting message: ${messageId}`);
+      
+      const result = await apiCall(`/chat/message/${messageId}`, {
+        method: 'DELETE',
+      });
+      
+      console.log('✅ Message deleted successfully');
+      return result;
     } catch (error) {
-      console.error('Failed to delete message:', error);
+      console.error(`❌ Failed to delete message ${messageId}:`, error);
+      
+      // If 403, user can only delete their own messages
+      if (error.message.includes('403') || error.message.includes('Can only delete')) {
+        throw new Error('You can only delete your own messages');
+      }
+      
       throw error;
     }
   },
 
-  /* ────────────────────────────────────────────────────── */
-  /*  Stubs for features not yet on the backend             */
-  /* ────────────────────────────────────────────────────── */
-  markAsRead: async () => ({ success: true }),
-  getUnreadCount: async () => ({ count: 0 }),
+  /**
+   * Send message (placeholder - messages are sent via WebSocket)
+   * 
+   * This function is kept for compatibility with your hooks,
+   * but actual message sending happens via WebSocket in websocketService.sendMessage()
+   */
+  sendMessage: async (projectId, content, attachments = []) => {
+    console.warn('⚠️ chatService.sendMessage() is deprecated - use WebSocket instead');
+    console.log('Use websocketService.sendMessage(content, attachments) instead');
+    
+    // Return a mock message object for optimistic UI updates
+    return {
+      id: `temp-${Date.now()}`,
+      project_id: projectId,
+      content,
+      sender_id: 'you',
+      sender_name: 'You',
+      sent_at: new Date().toISOString(),
+      edited_at: null,
+      is_deleted: false,
+      attachments,
+    };
+  },
+
+  /**
+   * Mark messages as read (placeholder for future implementation)
+   */
+  markAsRead: async (projectId) => {
+    console.log(`ℹ️ Mark as read not implemented yet for room: ${projectId}`);
+    // TODO: Implement when backend adds this endpoint
+    return { success: true };
+  },
+
+  /**
+   * Get unread message count (placeholder for future implementation)
+   */
+  getUnreadCount: async () => {
+    console.log('ℹ️ Unread count not implemented yet');
+    // TODO: Implement when backend adds this endpoint
+    return { unread_count: 0 };
+  },
 };
+
+export default chatService;
